@@ -190,14 +190,23 @@ module.exports = async (req, res) => {
     const model = photos.length && process.env.OPENROUTER_VISION_MODEL ? process.env.OPENROUTER_VISION_MODEL : textModel;
     // Vercel stops the function at 60 seconds, so keep everything inside a 56 second budget.
     const t0 = Date.now(), budget = 56000;
-    let out = null;
-    try { out = await askModel(OPENROUTER_API_KEY, content, model, 46000); } catch (e1) { console.error('first try failed:', e1 && e1.message); }
+    let out = null, firstErr = null;
+    try { out = await askModel(OPENROUTER_API_KEY, content, model, 46000); } catch (e1) { firstErr = e1; console.error('first try failed:', e1 && e1.message); }
     const left = budget - (Date.now() - t0);
     if (!out && left > 12000) out = await askModel(OPENROUTER_API_KEY, content, model, left - 2000);
+    if (!out && firstErr) throw firstErr;
     if (!out) return bad(res, 502, 'The AI did not return a usable answer. Please try again.');
     return res.status(200).json(Object.assign({ clientId }, tidy(out, sheet, clientId)));
   } catch (e) {
-    console.error('summarise failed:', e && e.message);
-    return bad(res, 502, 'The AI service is busy. Please try again in a moment.');
+    const m = String((e && e.message) || ''), st = (m.match(/model status (\d+)/) || [])[1];
+    console.error('summarise failed:', m);
+    let why = 'The AI service is busy. Please try again in a moment.';
+    if (st === '401' || st === '403') why = 'The AI key was rejected (' + st + '). Check OPENROUTER_API_KEY in Vercel.';
+    else if (st === '402') why = 'The AI account has no credit for this model (402). Use a free model or add credit.';
+    else if (st === '404') why = 'That AI model is not available (404). Change OPENROUTER_MODEL, for example to openrouter/free.';
+    else if (st === '429') why = 'The free AI limit was reached (429). Wait a few minutes, or switch the model.';
+    else if (st) why = 'The AI service returned an error (' + st + '). Try again, or change the model.';
+    else if (/abort/i.test(m)) why = 'The AI took too long to answer. Try shorter notes, or switch the model.';
+    return bad(res, 502, why);
   }
 };
