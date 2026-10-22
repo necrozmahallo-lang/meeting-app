@@ -116,8 +116,8 @@ function parseJson(text) {
 // So those two settings are only sent for paid models. The answer is still parsed as JSON either way.
 function isFree(model) { return /:free$/.test(model) || model === 'openrouter/free'; }
 
-async function askModel(apiKey, userContent, model) {
-  const ctrl = new AbortController(); const timer = setTimeout(() => ctrl.abort(), 52000);
+async function askModel(apiKey, userContent, model, timeoutMs) {
+  const ctrl = new AbortController(); const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST', signal: ctrl.signal,
@@ -126,7 +126,8 @@ async function askModel(apiKey, userContent, model) {
         model,
         messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: userContent }],
         temperature: 0.2, max_tokens: 4000
-      }, isFree(model) ? {} : { response_format: { type: 'json_object' }, provider: { data_collection: 'deny' } }))
+      }, isFree(model) ? {} : { response_format: { type: 'json_object' }, provider: { data_collection: 'deny' } },
+         /gpt-oss/.test(model) ? { reasoning: { effort: 'low' } } : {}))
     });
     if (!r.ok) throw new Error('model status ' + r.status);
     const d = await r.json();
@@ -187,8 +188,12 @@ module.exports = async (req, res) => {
   try {
     const textModel = process.env.OPENROUTER_MODEL || 'anthropic/claude-sonnet-4.5';
     const model = photos.length && process.env.OPENROUTER_VISION_MODEL ? process.env.OPENROUTER_VISION_MODEL : textModel;
-    let out = await askModel(OPENROUTER_API_KEY, content, model);
-    if (!out) out = await askModel(OPENROUTER_API_KEY, content, model);
+    // Vercel stops the function at 60 seconds, so keep everything inside a 56 second budget.
+    const t0 = Date.now(), budget = 56000;
+    let out = null;
+    try { out = await askModel(OPENROUTER_API_KEY, content, model, 46000); } catch (e1) { console.error('first try failed:', e1 && e1.message); }
+    const left = budget - (Date.now() - t0);
+    if (!out && left > 12000) out = await askModel(OPENROUTER_API_KEY, content, model, left - 2000);
     if (!out) return bad(res, 502, 'The AI did not return a usable answer. Please try again.');
     return res.status(200).json(Object.assign({ clientId }, tidy(out, sheet, clientId)));
   } catch (e) {
