@@ -456,6 +456,8 @@
         <button class="btn primary" id="approve">Approve and save</button>
         <button class="btn secondary" id="edit">Request changes</button>
         <div class="msg" id="msg"></div>
+        <button class="btn secondary" id="dlSheet" hidden>Download updated Excel file</button>
+        <div class="small" id="dlNote" hidden>Your original file is not changed. This is an updated copy with this meeting added. Fonts and colours may be simplified.</div>
       </div>
     </div>
   </section>
@@ -658,7 +660,7 @@
 
 
   // ====== Learn the client's sheet (read in the browser, not uploaded) ======
-  let wb = null, sheetState = null;
+  let wb = null, sheetState = null, sheetFileName = 'client-sheet.xlsx';
 
   function profileOf(headers, samples, idColumn) {
     const dateRe = [/^\d{1,4}[-\/.]\d{1,2}[-\/.]\d{1,4}$/, /^\d{1,2}[- ]?[A-Za-z]{3,9}[- ,]*\d{2,4}$/, /^[A-Za-z]{3,9}[- ]\d{4}$/, /^[A-Za-z]{3},? \d{1,2} [A-Za-z]{3,9} \d{4}$/];
@@ -688,7 +690,7 @@
     const samples = rows.slice(hi + 1).filter(r => r.some(c => String(c).trim())).slice(0, 8)
       .map(r => { const o = {}; cols.forEach(c => { o[c.h] = String(r[c.i] == null ? '' : r[c.i]).trim(); }); return o; });
     const idColumn = headers.find(h => /(cust|client|customer)[\s_-]*(id|no|number|code)/i.test(h)) || headers.find(h => /\bid\b|code/i.test(h)) || headers[0];
-    return { sheetName: name, headers, samples, idColumn, profile: profileOf(headers, samples, idColumn) };
+    return { sheetName: name, headers, samples, idColumn, profile: profileOf(headers, samples, idColumn), cols, hi };
   }
   function showSheet() {
     $('sheetLabel').textContent = sheetState.sheetName + ' - ' + sheetState.headers.length + ' columns learned';
@@ -703,7 +705,7 @@
     const note = $('sheetNote');
     if (typeof XLSX === 'undefined') { note.textContent = 'The spreadsheet reader could not load. Check your connection and try again.'; return; }
     try {
-      wb = XLSX.read(await f.arrayBuffer(), { type: 'array' });
+      wb = XLSX.read(await f.arrayBuffer(), { type: 'array' }); sheetFileName = f.name || 'client-sheet.xlsx'; $('dlSheet').hidden = true; $('dlNote').hidden = true;
       const tabs = wb.SheetNames;
       $('tabSel').innerHTML = ''; tabs.forEach(n => { const o = document.createElement('option'); o.textContent = n; o.value = n; $('tabSel').appendChild(o); });
       $('tabRow').hidden = tabs.length < 2;
@@ -849,6 +851,40 @@
     if (on) el.focus();
   });
 
+
+  // ====== Write the approved meeting into the uploaded sheet (in the browser) ======
+  function applyToSheet(clientId, fields) {
+    if (!wb || !sheetState || !sheetState.cols) return null;
+    const ws = wb.Sheets[sheetState.sheetName]; if (!ws) return null;
+    const isCsv = /\.csv$/i.test(sheetFileName);
+    const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' });
+    const idCol = sheetState.cols.find(c => c.h === sheetState.idColumn); if (!idCol) return null;
+    const want = String(clientId).trim().toLowerCase();
+    let ri = -1;
+    for (let r = sheetState.hi + 1; r < rows.length; r++) { if (String(rows[r][idCol.i] == null ? '' : rows[r][idCol.i]).trim().toLowerCase() === want) { ri = r; break; } }
+    const absR = ri >= 0 ? range.s.r + ri : range.e.r + 1;
+    const put = (h, v) => {
+      const c = sheetState.cols.find(x => x.h === h); if (!c) return;
+      let t = String(v); if (isCsv && /^([=+@]|-(?!\d))/.test(t)) t = "'" + t;
+      ws[XLSX.utils.encode_cell({ r: absR, c: range.s.c + c.i })] = { t: 's', v: t };
+    };
+    if (ri < 0) put(sheetState.idColumn, clientId);
+    Object.keys(fields || {}).forEach(h => { const v = String(fields[h] == null ? '' : fields[h]).trim(); if (v && h !== sheetState.idColumn) put(h, v); });
+    if (ri < 0) { range.e.r = absR; ws['!ref'] = XLSX.utils.encode_range(range); }
+    return ri >= 0 ? 'updated' : 'added';
+  }
+  function downloadSheet() {
+    if (!wb) return;
+    const ext = /\.csv$/i.test(sheetFileName) ? 'csv' : 'xlsx';
+    const base = sheetFileName.replace(/\.(xlsx|xls|csv)$/i, '');
+    const out = XLSX.write(wb, { bookType: ext, type: 'array' });
+    const blob = new Blob([out], { type: ext === 'csv' ? 'text/csv;charset=utf-8' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = base + ' (updated).' + ext;
+    document.body.appendChild(a); a.click(); a.remove();
+  }
+  $('dlSheet').addEventListener('click', downloadSheet);
+
   // ====== Approve and save ======
   $('approve').addEventListener('click', async () => {
     if (!lastResult) return;
@@ -860,7 +896,9 @@
       const row = { client_id: meeting.clientId, summary: $('rSummary').textContent, key_points: lastResult.key_points || [], action_items: lastResult.action_items || [], fields };
       const { error } = await sb.from('records').insert(row);
       if (error) throw error;
-      btn.textContent = 'Saved'; btn.classList.add('done'); msg.textContent = 'Saved to your records.';
+      let sheetMsg = '';
+      try { const res = applyToSheet(meeting.clientId, fields); if (res) { sheetMsg = res === 'updated' ? ' Row updated in your sheet.' : ' New row added to your sheet.'; $('dlSheet').hidden = false; $('dlNote').hidden = false; } } catch (e2) { sheetMsg = ' Could not update the sheet copy.'; }
+      btn.textContent = 'Saved'; btn.classList.add('done'); msg.textContent = 'Saved to your records.' + sheetMsg;
       setTimeout(() => { btn.textContent = 'Approve and save'; btn.classList.remove('done'); }, 2200);
     } catch (e) {
       btn.textContent = 'Approve and save';
