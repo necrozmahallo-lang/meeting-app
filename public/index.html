@@ -316,8 +316,8 @@
   .ind { width: calc((100% - 10px) / 4); }
   .overlay { position: absolute; inset: 0; z-index: 30; background: var(--bg); display: flex; flex-direction: column; justify-content: center; padding: 32px 24px; overflow-y: auto; }
   .overlay[hidden] { display: none !important; }
-  .overlay input[type="email"] { width: 100%; height: 56px; border-radius: 16px; border: 1px solid var(--edge); background: var(--card); color: var(--text); font: inherit; font-weight: 600; font-size: 17px; padding: 0 16px; outline: 0; margin-bottom: 12px; }
-  .overlay input[type="email"]:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .overlay input[type="email"], .overlay input[type="password"] { width: 100%; height: 56px; border-radius: 16px; border: 1px solid var(--edge); background: var(--card); color: var(--text); font: inherit; font-weight: 600; font-size: 17px; padding: 0 16px; outline: 0; margin-bottom: 12px; }
+  .overlay input[type="email"]:focus-visible, .overlay input[type="password"]:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
   .overlay ul { margin: 0 0 18px; padding-left: 20px; font-size: 16px; font-weight: 500; line-height: 1.55; }
   .overlay li { margin-bottom: 10px; }
   .agree { display: flex; gap: 12px; align-items: flex-start; font-size: 16px; font-weight: 600; margin: 6px 0 18px; line-height: 1.4; }
@@ -337,9 +337,11 @@
 <div class="app">
   <div class="overlay" id="authView">
     <h1>Meetings</h1>
-    <p class="sub">Sign in with your work email. We email you a one-time link, so there is no password to remember.</p>
+    <p class="sub">Sign in with your work email and password, or get a one-time link by email.</p>
     <input type="email" id="authEmail" placeholder="you@company.com" autocomplete="email" inputmode="email">
-    <button class="btn primary" id="authBtn">Email me a sign-in link</button>
+    <input type="password" id="authPw" placeholder="Password" autocomplete="current-password">
+    <button class="btn primary" id="authPwBtn">Sign in</button>
+    <button class="btn secondary" id="authBtn">Email me a sign-in link instead</button>
     <div class="msg" id="authMsg" aria-live="polite"></div>
   </div>
 
@@ -893,6 +895,17 @@
     $('authMsg').textContent = error ? 'Could not send the link. ' + error.message : 'Check your email and open the link on this device.';
     $('authBtn').disabled = false;
   });
+  $('authPwBtn').addEventListener('click', async () => {
+    const email = $('authEmail').value.trim(), password = $('authPw').value;
+    if (!/^\S+@\S+\.\S+$/.test(email)) { $('authMsg').textContent = 'Enter a valid email address.'; return; }
+    if (!password) { $('authMsg').textContent = 'Enter your password.'; return; }
+    if (!sb) { $('authMsg').textContent = 'The app is not configured yet.'; return; }
+    $('authPwBtn').disabled = true; $('authMsg').textContent = 'Signing in...';
+    const { error } = await sb.auth.signInWithPassword({ email, password });
+    $('authMsg').textContent = error ? 'Could not sign in. Check your email and password.' : '';
+    $('authPwBtn').disabled = false;
+  });
+  $('authPw').addEventListener('keydown', e => { if (e.key === 'Enter') $('authPwBtn').click(); });
   $('agree').addEventListener('change', () => { $('agreeBtn').disabled = !$('agree').checked; });
   $('agreeBtn').addEventListener('click', async () => {
     $('agreeBtn').disabled = true;
